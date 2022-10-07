@@ -1,65 +1,73 @@
 package ru.netology;
 
-import java.io.*;
-import java.net.ServerSocket;
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.Socket;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
-public class Server {
-    private final static int THREADS = 64; // Задаем количество потоков в пуле потоков
-    // Map для хранения пар: ключ - метод, значение - другая Map
-    // Вложенная Map для хранения пар: ключ - путь, значение - Handler
-    private ConcurrentHashMap<String, ConcurrentHashMap> handlers = new ConcurrentHashMap<>();
-    // Создаем пул потоков фиксированного размера
-    private final ExecutorService es = Executors.newFixedThreadPool(THREADS);
+public class Response implements Runnable {
+    final Socket socket;
+    final ConcurrentHashMap<String, ConcurrentHashMap> firstLevel;
 
-    public void listen(int port) {
-        try (final var serverSocket = new ServerSocket(port)) {
-            while (true) {
-                final var socket = serverSocket.accept();
-                es.submit(new Response(socket, handlers));
+    Response(Socket socket, ConcurrentHashMap<String, ConcurrentHashMap> firstLevel) {
+        this.socket = socket;
+        this.firstLevel = firstLevel;
+    }
+
+    @Override
+    public void run() {
+        try (
+                final var in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                final var out = new BufferedOutputStream(socket.getOutputStream());
+        ) {
+            final var request = createRequest(in);
+            System.out.println("Зарегистрирован запрос: " + request.getMethod() + " "
+                    + request.getPath() + " " + request.getProtocol());
+
+            if (firstLevel.containsKey(request.getMethod())) {
+                System.out.println("Есть вложенная Map с ключом: " + request.getMethod());
+                if (firstLevel.get(request.getMethod()).containsKey(request.getPath())) {
+                    System.out.println("Во вложенной Map есть handler по ключу: " + request.getPath());
+                    var first = firstLevel.get(request.getMethod());
+                    var handler = (Handler) first.get(request.getPath());
+                    handler.handle(request, out);
+                    System.out.println("Успешно направлен ответ на запрос!");
+                } else  {
+                    returnError(out);
+                    System.out.println("На запрос направлен ответ об ошибке!");
+                }
+            } else {
+                returnError(out);
+                System.out.println("На запрос направлен ответ об ошибке!");
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    public void addHandler(String method, String fullPath, Handler handler) {
-        if (!handlers.containsKey(method)) {
-            System.out.println("Успешно создана вложенная Map с ключом/метод: " + method);
-            handlers.put(method, creatingNestedCollection(fullPath, handler));
+    private Request createRequest(BufferedReader in) throws IOException {
+        var requestLine = in.readLine();
+        var parts = requestLine.split(" ");
+        if (parts.length >= 3) {
+            return new Request(parts[0], parts[1], parts[2], parts.length == 4 ? parts[3] : null);
         } else {
-            //если метод есть(ключ), то добавляем новый обработчик с новым путем и обработчиком
-            correctionOfTheCollection(handlers.get(method), fullPath, handler);
+            return null;
         }
     }
 
-    private ConcurrentHashMap<String, Handler> creatingNestedCollection(String fullPath, Handler handler) {
-        // Map для хранения пар: ключ - путь, значение - Handler
-        ConcurrentHashMap<String, Handler> nestedCollection = new ConcurrentHashMap<>();
-        nestedCollection.put(returnLastPartOfPath(fullPath), handler);
-        System.out.println("Во вложенную Map успешно добавлен handler по ключу/путь: " + returnLastPartOfPath(fullPath));
-        return nestedCollection;
-    }
-
-    private void correctionOfTheCollection(ConcurrentHashMap<String, Handler> correctedCollection, String fullPath, Handler handler) {
-        String lastPartOfPath = returnLastPartOfPath(fullPath);
-        if (!correctedCollection.containsKey(lastPartOfPath)) {
-            correctedCollection.put(lastPartOfPath, handler);
-            System.out.println("Во вложенную Map успешно добавлен handler по ключу: " + lastPartOfPath);
-        } else {
-            System.out.println("Ошибка - во вложенной Map уже существует handler по ключу: " + lastPartOfPath);
-        }
-    }
-
-    private String returnLastPartOfPath(String fullPath) {
-        var parts = fullPath.split("/");
-        String lastPartOfPath = "/" + parts[parts.length - 1];
-        System.out.println("");
-        return lastPartOfPath;
+    private void returnError(BufferedOutputStream out) throws IOException {
+        out.write((
+                "HTTP/1.1 404 Not Found\r\n" +
+                        "Content-Length: 0\r\n" +
+                        "Connection: close\r\n" +
+                        "\r\n"
+        ).getBytes());
+        out.flush();
     }
 
 }
+
 
 
